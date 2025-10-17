@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const app = express();
 const port = process.env.PORT || 5000;
 
@@ -24,6 +24,7 @@ const client = new MongoClient(uri, {
 // Global variable to hold the collections
 let usersCollection;
 let tripsCollection;
+let joinRequestsCollection;
 
 async function run() {
   try {
@@ -34,6 +35,7 @@ async function run() {
     const database = client.db("voyagerPlus");
     usersCollection = database.collection("users");
     tripsCollection = database.collection("trips");
+    joinRequestsCollection = database.collection("joinRequests");
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
@@ -171,6 +173,116 @@ app.get('/trips/group', async (req, res) => {
     res.send(groupTrips);
   } catch (error) {
     console.error("❌ Error fetching group trips:", error);
+    res.status(500).send({ message: 'Server error' });
+  }
+});
+
+// Create a join request for a group trip
+app.post('/trips/:tripId/request', async (req, res) => {
+  try {
+    const tripId = req.params.tripId;
+    const { requesterUsername, message } = req.body;
+
+    if (!requesterUsername) return res.status(400).send({ message: 'Missing requesterUsername' });
+
+    const trip = await tripsCollection.findOne({ _id: new ObjectId(tripId) });
+    if (!trip) return res.status(404).send({ message: 'Trip not found' });
+    if (trip.type !== 'GROUP') return res.status(400).send({ message: 'Can only request to join group trips' });
+    if (trip.creatorUsername === requesterUsername) return res.status(400).send({ message: 'Creator cannot request own trip' });
+
+    // Check for existing pending request
+    const existing = await joinRequestsCollection.findOne({
+      tripId: new ObjectId(tripId),
+      requesterUsername,
+      status: 'PENDING'
+    });
+    if (existing) return res.status(409).send({ message: 'You already have a pending request for this trip' });
+
+    const requestDoc = {
+      tripId: new ObjectId(tripId),
+      tripCreatorUsername: trip.creatorUsername,
+      requesterUsername,
+      message: message || '',
+      status: 'PENDING',
+      createdAt: new Date()
+    };
+
+    const result = await joinRequestsCollection.insertOne(requestDoc);
+    console.log("✅ Join request created successfully:", result.insertedId);
+    res.status(201).send({ insertedId: result.insertedId, message: 'Join request created successfully' });
+  } catch (error) {
+    console.error("❌ Error creating join request:", error);
+    res.status(500).send({ message: 'Failed to create join request' });
+  }
+});
+
+// List join requests for a trip (only trip creator should call)
+app.get('/trips/:tripId/requests', async (req, res) => {
+  try {
+    const tripId = req.params.tripId;
+    const username = req.query.username; // username of caller; used to verify owner
+
+    const trip = await tripsCollection.findOne({ _id: new ObjectId(tripId) });
+    if (!trip) return res.status(404).send({ message: 'Trip not found' });
+    if (!username || username !== trip.creatorUsername) {
+      return res.status(403).send({ message: 'Only the trip creator can view requests' });
+    }
+
+    const requests = await joinRequestsCollection.find({ tripId: new ObjectId(tripId) }).toArray();
+    res.send(requests);
+  } catch (error) {
+    console.error("❌ Error fetching join requests:", error);
+    res.status(500).send({ message: 'Server error' });
+  }
+});
+
+// Approve or reject a join request (trip owner only)
+app.put('/trips/:tripId/requests/:requestId/respond', async (req, res) => {
+  try {
+    const { tripId, requestId } = req.params;
+    const { action, responderUsername } = req.body; // action: 'approve' | 'reject'
+
+    if (!['approve', 'reject'].includes(action)) {
+      return res.status(400).send({ message: 'Invalid action. Must be "approve" or "reject"' });
+    }
+
+    const trip = await tripsCollection.findOne({ _id: new ObjectId(tripId) });
+    if (!trip) return res.status(404).send({ message: 'Trip not found' });
+    if (!responderUsername || responderUsername !== trip.creatorUsername) {
+      return res.status(403).send({ message: 'Only the trip creator can respond to requests' });
+    }
+
+    const reqDoc = await joinRequestsCollection.findOne({ 
+      _id: new ObjectId(requestId), 
+      tripId: new ObjectId(tripId) 
+    });
+    if (!reqDoc) return res.status(404).send({ message: 'Request not found' });
+    if (reqDoc.status !== 'PENDING') {
+      return res.status(409).send({ message: 'Request has already been responded to' });
+    }
+
+    if (action === 'approve') {
+      // Add requester to trip participants
+      await tripsCollection.updateOne(
+        { _id: new ObjectId(tripId) },
+        { $addToSet: { participants: reqDoc.requesterUsername } }
+      );
+      await joinRequestsCollection.updateOne(
+        { _id: new ObjectId(requestId) },
+        { $set: { status: 'APPROVED', responderUsername, respondedAt: new Date() } }
+      );
+      console.log("✅ Join request approved for user:", reqDoc.requesterUsername);
+      return res.send({ message: 'Request approved successfully' });
+    } else {
+      await joinRequestsCollection.updateOne(
+        { _id: new ObjectId(requestId) },
+        { $set: { status: 'REJECTED', responderUsername, respondedAt: new Date() } }
+      );
+      console.log("✅ Join request rejected for user:", reqDoc.requesterUsername);
+      return res.send({ message: 'Request rejected' });
+    }
+  } catch (error) {
+    console.error("❌ Error responding to request:", error);
     res.status(500).send({ message: 'Server error' });
   }
 });
