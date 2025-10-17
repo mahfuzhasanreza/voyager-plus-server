@@ -140,7 +140,15 @@ app.get('/trips', async (req, res) => {
 // Get solo trips only
 app.get('/trips/solo', async (req, res) => {
   try {
-    const soloTrips = await tripsCollection.find({ type: 'SOLO' }).toArray();
+    const excludeUsername = req.query.excludeUsername;
+    let query = { type: 'SOLO' };
+
+    // Exclude the current user's trips if excludeUsername is provided
+    if (excludeUsername) {
+      query.creatorUsername = { $ne: excludeUsername };
+    }
+
+    const soloTrips = await tripsCollection.find(query).toArray();
     res.send(soloTrips);
   } catch (error) {
     console.error("❌ Error fetching solo trips:", error);
@@ -151,7 +159,15 @@ app.get('/trips/solo', async (req, res) => {
 // Get group trips only
 app.get('/trips/group', async (req, res) => {
   try {
-    const groupTrips = await tripsCollection.find({ type: 'GROUP' }).toArray();
+    const excludeUsername = req.query.excludeUsername;
+    let query = { type: 'GROUP' };
+
+    // Exclude the current user's trips if excludeUsername is provided
+    if (excludeUsername) {
+      query.creatorUsername = { $ne: excludeUsername };
+    }
+
+    const groupTrips = await tripsCollection.find(query).toArray();
     res.send(groupTrips);
   } catch (error) {
     console.error("❌ Error fetching group trips:", error);
