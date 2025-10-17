@@ -287,6 +287,68 @@ app.put('/trips/:tripId/requests/:requestId/respond', async (req, res) => {
   }
 });
 
+// Get notifications for a user (join requests for their trips)
+app.get('/notifications/:username', async (req, res) => {
+  try {
+    const username = req.params.username;
+
+    // Find all trips created by this user
+    const userTrips = await tripsCollection.find({ creatorUsername: username }).toArray();
+    const tripIds = userTrips.map(trip => trip._id);
+
+    // Find all pending join requests for those trips
+    const pendingRequests = await joinRequestsCollection.find({
+      tripId: { $in: tripIds },
+      status: 'PENDING'
+    }).toArray();
+
+    // Enrich requests with trip information
+    const notifications = pendingRequests.map(request => {
+      const trip = userTrips.find(t => t._id.toString() === request.tripId.toString());
+      return {
+        _id: request._id,
+        type: 'JOIN_REQUEST',
+        tripId: request.tripId,
+        tripTitle: trip ? trip.title : 'Unknown Trip',
+        tripRoute: trip ? trip.route : '',
+        requesterUsername: request.requesterUsername,
+        message: request.message,
+        createdAt: request.createdAt,
+        status: request.status
+      };
+    });
+
+    console.log(`✅ Found ${notifications.length} notifications for user: ${username}`);
+    res.send(notifications);
+  } catch (error) {
+    console.error("❌ Error fetching notifications:", error);
+    res.status(500).send({ message: 'Server error' });
+  }
+});
+
+// Get notification count for a user
+app.get('/notifications/:username/count', async (req, res) => {
+  try {
+    const username = req.params.username;
+
+    // Find all trips created by this user
+    const userTrips = await tripsCollection.find({ creatorUsername: username }).toArray();
+    const tripIds = userTrips.map(trip => trip._id);
+
+    // Count pending join requests for those trips
+    const count = await joinRequestsCollection.countDocuments({
+      tripId: { $in: tripIds },
+      status: 'PENDING'
+    });
+
+    console.log(`✅ User ${username} has ${count} pending notifications`);
+    res.send({ count });
+  } catch (error) {
+    console.error("❌ Error counting notifications:", error);
+    res.status(500).send({ message: 'Server error' });
+  }
+});
+
 
 app.get('/', (req, res) => {
   res.send('Voyager+ Server is running! 🚀');
