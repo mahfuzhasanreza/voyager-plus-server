@@ -23,6 +23,7 @@ const client = new MongoClient(uri, {
 
 // Global variable to hold the collections
 let usersCollection;
+let tripsCollection;
 
 async function run() {
   try {
@@ -32,6 +33,7 @@ async function run() {
 
     const database = client.db("voyagerPlus");
     usersCollection = database.collection("users");
+    tripsCollection = database.collection("trips");
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
@@ -109,6 +111,32 @@ app.put('/user/update', async (req, res) => {
     res.status(500).send({ message: 'Update failed' });
   }
 });
+
+// Add a new trip
+app.post('/trips', async (req, res) => {
+  try {
+    const trip = req.body;
+    console.log("📝 Received trip data:", trip);
+    const result = await tripsCollection.insertOne(trip);
+    console.log("✅ Trip inserted successfully:", result.insertedId);
+    res.send(result);
+  } catch (error) {
+    console.error("❌ Error inserting trip:", error);
+    res.status(500).send({ error: 'Failed to insert trip', message: error.message });
+  }
+});
+
+// Get all trips
+app.get('/trips', async (req, res) => {
+  try {
+    const trips = await tripsCollection.find().toArray();
+    res.send(trips);
+  } catch (error) {
+    console.error("❌ Error fetching trips:", error);
+    res.status(500).send({ message: 'Server error' });
+  }
+});
+
 
 app.get('/', (req, res) => {
   res.send('Voyager+ Server is running! 🚀');
