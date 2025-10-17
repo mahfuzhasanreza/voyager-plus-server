@@ -287,25 +287,25 @@ app.put('/trips/:tripId/requests/:requestId/respond', async (req, res) => {
   }
 });
 
-// Get notifications for a user (join requests for their trips)
+// Get notifications for a user (both incoming join requests and responses to their requests)
 app.get('/notifications/:username', async (req, res) => {
   try {
     const username = req.params.username;
+    const notifications = [];
 
-    // Find all trips created by this user
+    // 1. Find incoming join requests for trips created by this user (PENDING only)
     const userTrips = await tripsCollection.find({ creatorUsername: username }).toArray();
     const tripIds = userTrips.map(trip => trip._id);
 
-    // Find all pending join requests for those trips
     const pendingRequests = await joinRequestsCollection.find({
       tripId: { $in: tripIds },
       status: 'PENDING'
     }).toArray();
 
-    // Enrich requests with trip information
-    const notifications = pendingRequests.map(request => {
+    // Add pending requests as notifications
+    pendingRequests.forEach(request => {
       const trip = userTrips.find(t => t._id.toString() === request.tripId.toString());
-      return {
+      notifications.push({
         _id: request._id,
         type: 'JOIN_REQUEST',
         tripId: request.tripId,
@@ -315,8 +315,35 @@ app.get('/notifications/:username', async (req, res) => {
         message: request.message,
         createdAt: request.createdAt,
         status: request.status
-      };
+      });
     });
+
+    // 2. Find responses to this user's join requests (APPROVED or REJECTED)
+    const userRequestResponses = await joinRequestsCollection.find({
+      requesterUsername: username,
+      status: { $in: ['APPROVED', 'REJECTED'] }
+    }).toArray();
+
+    // Add responses as notifications
+    for (const response of userRequestResponses) {
+      const trip = await tripsCollection.findOne({ _id: response.tripId });
+      notifications.push({
+        _id: response._id,
+        type: response.status === 'APPROVED' ? 'REQUEST_APPROVED' : 'REQUEST_REJECTED',
+        tripId: response.tripId,
+        tripTitle: trip ? trip.title : 'Unknown Trip',
+        tripRoute: trip ? trip.route : '',
+        tripCreatorUsername: response.tripCreatorUsername,
+        message: response.status === 'APPROVED'
+          ? `Your request to join "${trip ? trip.title : 'the trip'}" has been approved!`
+          : `Your request to join "${trip ? trip.title : 'the trip'}" has been declined.`,
+        createdAt: response.respondedAt || response.createdAt,
+        status: response.status
+      });
+    }
+
+    // Sort by date (newest first)
+    notifications.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
     console.log(`✅ Found ${notifications.length} notifications for user: ${username}`);
     res.send(notifications);
@@ -330,21 +357,62 @@ app.get('/notifications/:username', async (req, res) => {
 app.get('/notifications/:username/count', async (req, res) => {
   try {
     const username = req.params.username;
+    let totalCount = 0;
 
-    // Find all trips created by this user
+    // 1. Count pending join requests for trips created by this user
     const userTrips = await tripsCollection.find({ creatorUsername: username }).toArray();
     const tripIds = userTrips.map(trip => trip._id);
 
-    // Count pending join requests for those trips
-    const count = await joinRequestsCollection.countDocuments({
+    const pendingRequestsCount = await joinRequestsCollection.countDocuments({
       tripId: { $in: tripIds },
       status: 'PENDING'
     });
 
-    console.log(`✅ User ${username} has ${count} pending notifications`);
-    res.send({ count });
+    totalCount += pendingRequestsCount;
+
+    // 2. Count responses to this user's join requests (APPROVED or REJECTED)
+    const responsesCount = await joinRequestsCollection.countDocuments({
+      requesterUsername: username,
+      status: { $in: ['APPROVED', 'REJECTED'] }
+    });
+
+    totalCount += responsesCount;
+
+    console.log(`✅ User ${username} has ${totalCount} pending notifications (${pendingRequestsCount} requests, ${responsesCount} responses)`);
+    res.send({ count: totalCount });
   } catch (error) {
     console.error("❌ Error counting notifications:", error);
+    res.status(500).send({ message: 'Server error' });
+  }
+});
+
+// Mark notification as read (remove approved/rejected requests after viewing)
+app.delete('/notifications/:username/:requestId', async (req, res) => {
+  try {
+    const { username, requestId } = req.params;
+
+    // Find the request
+    const request = await joinRequestsCollection.findOne({
+      _id: new ObjectId(requestId),
+      requesterUsername: username
+    });
+
+    if (!request) {
+      return res.status(404).send({ message: 'Notification not found' });
+    }
+
+    // Only allow deletion of APPROVED or REJECTED requests (not PENDING)
+    if (request.status === 'PENDING') {
+      return res.status(400).send({ message: 'Cannot delete pending requests' });
+    }
+
+    // Delete the request notification
+    await joinRequestsCollection.deleteOne({ _id: new ObjectId(requestId) });
+
+    console.log(`✅ Notification ${requestId} deleted for user: ${username}`);
+    res.send({ message: 'Notification dismissed' });
+  } catch (error) {
+    console.error("❌ Error deleting notification:", error);
     res.status(500).send({ message: 'Server error' });
   }
 });
