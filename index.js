@@ -137,6 +137,28 @@ app.get('/trips', async (req, res) => {
   }
 });
 
+// Get solo trips only
+app.get('/trips/solo', async (req, res) => {
+  try {
+    const soloTrips = await tripsCollection.find({ type: 'SOLO' }).toArray();
+    res.send(soloTrips);
+  } catch (error) {
+    console.error("❌ Error fetching solo trips:", error);
+    res.status(500).send({ message: 'Server error' });
+  }
+});
+
+// Get group trips only
+app.get('/trips/group', async (req, res) => {
+  try {
+    const groupTrips = await tripsCollection.find({ type: 'GROUP' }).toArray();
+    res.send(groupTrips);
+  } catch (error) {
+    console.error("❌ Error fetching group trips:", error);
+    res.status(500).send({ message: 'Server error' });
+  }
+});
+
 
 app.get('/', (req, res) => {
   res.send('Voyager+ Server is running! 🚀');
