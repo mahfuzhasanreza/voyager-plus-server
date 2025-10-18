@@ -25,6 +25,7 @@ const client = new MongoClient(uri, {
 let usersCollection;
 let tripsCollection;
 let joinRequestsCollection;
+let groupChatsCollection;
 
 async function run() {
   try {
@@ -36,6 +37,7 @@ async function run() {
     usersCollection = database.collection("users");
     tripsCollection = database.collection("trips");
     joinRequestsCollection = database.collection("joinRequests");
+    groupChatsCollection = database.collection("groupChats");
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
@@ -272,6 +274,29 @@ app.put('/trips/:tripId/requests/:requestId/respond', async (req, res) => {
         { $set: { status: 'APPROVED', responderUsername, respondedAt: new Date() } }
       );
       console.log("✅ Join request approved for user:", reqDoc.requesterUsername);
+
+      // Automatically create a group chat if not already exists
+      let chatId = tripId;
+      const existingChat = await groupChatsCollection.findOne({ tripId: new ObjectId(tripId) });
+      
+      if (!existingChat) {
+        await groupChatsCollection.insertOne({
+          tripId: new ObjectId(tripId),
+          creatorUsername: trip.creatorUsername,
+          participants: [trip.creatorUsername, reqDoc.requesterUsername],
+          messages: [],
+          createdAt: new Date()
+        });
+        console.log("✅ Group chat created for trip:", tripId);
+      } else {
+        // Add participant if not already in the chat
+        await groupChatsCollection.updateOne(
+          { tripId: new ObjectId(tripId) },
+          { $addToSet: { participants: reqDoc.requesterUsername } }
+        );
+        console.log("✅ User added to existing group chat:", tripId);
+      }
+
       return res.send({ message: 'Request approved successfully' });
     } else {
       await joinRequestsCollection.updateOne(
@@ -413,6 +438,104 @@ app.delete('/notifications/:username/:requestId', async (req, res) => {
     res.send({ message: 'Notification dismissed' });
   } catch (error) {
     console.error("❌ Error deleting notification:", error);
+    res.status(500).send({ message: 'Server error' });
+  }
+});
+
+// ==================== GROUP CHAT ENDPOINTS (Database Persistent) ====================
+
+// Get group chat for a trip
+app.get('/groupchats/:tripId', async (req, res) => {
+  try {
+    const { tripId } = req.params;
+
+    const chat = await groupChatsCollection.findOne({ tripId: new ObjectId(tripId) });
+
+    if (!chat) {
+      return res.status(404).send({ message: 'Group chat not found' });
+    }
+
+    const trip = await tripsCollection.findOne({ _id: new ObjectId(tripId) });
+
+    res.send({
+      _id: chat._id,
+      tripId: chat.tripId,
+      chatName: trip ? `${trip.title} - Group Chat` : 'Group Chat',
+      members: chat.participants,
+      messages: chat.messages,
+      createdAt: chat.createdAt
+    });
+  } catch (error) {
+    console.error("❌ Error fetching group chat:", error);
+    res.status(500).send({ message: 'Server error' });
+  }
+});
+
+// Get all group chats for a user
+app.get('/groupchats/user/:username', async (req, res) => {
+  try {
+    const { username } = req.params;
+
+    // Find all chats where user is a participant
+    const chats = await groupChatsCollection.find({ 
+      participants: username 
+    }).toArray();
+
+    const userChats = [];
+
+    for (const chat of chats) {
+      const trip = await tripsCollection.findOne({ _id: chat.tripId });
+      userChats.push({
+        _id: chat._id,
+        tripId: chat.tripId,
+        chatName: trip ? `${trip.title} - Group Chat` : 'Group Chat',
+        members: chat.participants,
+        messageCount: chat.messages.length,
+        lastMessage: chat.messages.length > 0 ? chat.messages[chat.messages.length - 1] : null,
+        createdAt: chat.createdAt
+      });
+    }
+
+    res.send(userChats);
+  } catch (error) {
+    console.error("❌ Error fetching user group chats:", error);
+    res.status(500).send({ message: 'Server error' });
+  }
+});
+
+// Add message to group chat (persisted to database)
+app.post('/groupchats/:tripId/messages', async (req, res) => {
+  try {
+    const { tripId } = req.params;
+    const { sender, content } = req.body;
+
+    const chat = await groupChatsCollection.findOne({ tripId: new ObjectId(tripId) });
+
+    if (!chat) {
+      return res.status(404).send({ message: 'Group chat not found' });
+    }
+
+    // Verify sender is a member
+    if (!chat.participants.includes(sender)) {
+      return res.status(403).send({ message: 'You are not a member of this chat' });
+    }
+
+    const message = {
+      sender,
+      content,
+      timestamp: new Date()
+    };
+
+    // Add message to the chat's messages array in the database
+    await groupChatsCollection.updateOne(
+      { tripId: new ObjectId(tripId) },
+      { $push: { messages: message } }
+    );
+
+    console.log(`✅ Message added to group chat ${tripId} by ${sender}`);
+    res.send({ success: true, message });
+  } catch (error) {
+    console.error("❌ Error adding message:", error);
     res.status(500).send({ message: 'Server error' });
   }
 });
